@@ -1,0 +1,42 @@
+name: Checks and static bundle
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  statuses: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.19.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm test
+      - run: pnpm lint
+      - run: pnpm build
+      - uses: actions/upload-artifact@v4
+        with:
+          name: b3-bridge-static
+          path: dist/client
+          if-no-files-found: error
+          retention-days: 30
+      - name: Create content-addressed IPFS bundle
+        id: ipfs
+        uses: ipshipyard/ipfs-deploy-action@v2
+        with:
+          path-to-deploy: dist/client
+          github-token: ${{ github.token }}
+          set-github-status: true
