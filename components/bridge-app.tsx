@@ -2,7 +2,7 @@
 
 /* oxlint-disable react/react-compiler -- Temporary workaround for an oxlint compiler-rule invariant on this stateful client boundary. */
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   AlertTriangle,
   ArrowDown,
@@ -310,6 +310,34 @@ function friendlyError(error: unknown) {
   return text.split('\n')[0] || 'The request failed. Nothing was sent.';
 }
 
+function isTopLevelWindow() {
+  try {
+    return window.top === window.self;
+  } catch {
+    return false;
+  }
+}
+
+async function waitForSuccessfulReceipt(hash: Hex, label: string) {
+  let replacementReason: 'cancelled' | 'replaced' | 'repriced' | undefined;
+  const receipt = await publicClient.waitForTransactionReceipt({
+    hash,
+    onReplaced: ({ reason }) => {
+      replacementReason = reason;
+    },
+  });
+
+  if (replacementReason && replacementReason !== 'repriced') {
+    throw new Error(
+      `${label} was ${replacementReason} in the wallet. Its intended action was not accepted.`,
+    );
+  }
+  if (receipt.status !== 'success') {
+    throw new Error(`${label} reverted on Ethereum. Its intended action failed.`);
+  }
+  return receipt;
+}
+
 function StatusIcon({ state }: { state: CheckState }) {
   if (state === 'checking')
     return (
@@ -355,6 +383,8 @@ export function BridgeApp() {
   const [b3Address, setB3Address] = useState('');
   const [walletBusy, setWalletBusy] = useState(false);
   const [action, setAction] = useState<ActionState>({ phase: 'idle' });
+  const [topLevel, setTopLevel] = useState(false);
+  const activeAccount = useRef<Address | undefined>(undefined);
 
   const refreshDeployment = useCallback(async () => {
     setDeployment((current) => ({
@@ -388,8 +418,10 @@ export function BridgeApp() {
         args: [owner, VAULT_ADDRESS],
       }),
     ]);
-    setBalance(tokenBalance);
-    setAllowance(tokenAllowance);
+    if (activeAccount.current === owner) {
+      setBalance(tokenBalance);
+      setAllowance(tokenAllowance);
+    }
   }, []);
 
   useEffect(() => {
@@ -397,6 +429,52 @@ export function BridgeApp() {
     const timer = window.setInterval(() => void refreshDeployment(), 45_000);
     return () => window.clearInterval(timer);
   }, [refreshDeployment]);
+
+  useEffect(() => {
+    setTopLevel(isTopLevelWindow());
+  }, []);
+
+  useEffect(() => {
+    const provider = window.ethereum;
+    if (!provider) return;
+
+    const handleAccountsChanged = (accounts: Address[]) => {
+      const selected = accounts[0] ? getAddress(accounts[0]) : undefined;
+      activeAccount.current = selected;
+      setAccount(selected);
+      setBalance(0n);
+      setAllowance(0n);
+      setAction({ phase: 'idle' });
+      if (selected) {
+        void refreshWallet(selected).catch((error) => {
+          if (activeAccount.current === selected) {
+            setAction({ phase: 'error', message: friendlyError(error) });
+          }
+        });
+      }
+    };
+    const handleChainChanged = (chainId: string) => {
+      setWalletChainId(Number.parseInt(chainId, 16));
+      setAction({ phase: 'idle' });
+    };
+    const handleDisconnect = () => {
+      activeAccount.current = undefined;
+      setAccount(undefined);
+      setWalletChainId(undefined);
+      setBalance(0n);
+      setAllowance(0n);
+      setAction({ phase: 'idle' });
+    };
+
+    provider.on('accountsChanged', handleAccountsChanged);
+    provider.on('chainChanged', handleChainChanged);
+    provider.on('disconnect', handleDisconnect);
+    return () => {
+      provider.removeListener('accountsChanged', handleAccountsChanged);
+      provider.removeListener('chainChanged', handleChainChanged);
+      provider.removeListener('disconnect', handleDisconnect);
+    };
+  }, [refreshWallet]);
 
   const connectWallet = async () => {
     if (!window.ethereum) {
@@ -416,10 +494,12 @@ export function BridgeApp() {
       });
       const [selected] = await wallet.requestAddresses();
       if (!selected) throw new Error('No Ethereum account was selected.');
+      const normalizedAccount = getAddress(selected);
       const chainId = await wallet.getChainId();
-      setAccount(selected);
+      activeAccount.current = normalizedAccount;
+      setAccount(normalizedAccount);
       setWalletChainId(chainId);
-      await refreshWallet(selected);
+      await refreshWallet(normalizedAccount);
     } catch (error) {
       setAction({ phase: 'error', message: friendlyError(error) });
     } finally {
@@ -483,6 +563,7 @@ export function BridgeApp() {
     deployment.depositViable;
   const correctNetwork = walletChainId === ETHEREUM_CHAIN_ID;
   const canDeposit = Boolean(
+    topLevel &&
     account &&
     correctNetwork &&
     liveReady &&
@@ -498,15 +579,18 @@ export function BridgeApp() {
     'depositing',
     'confirming',
   ].includes(action.phase);
-  const closedReason = !deployment.initialized
-    ? 'The deployed code matches, but the verifier has not been initialized.'
-    : !deployment.depositViable
-      ? 'The verifier is initialized, but a fresh qualified validator release path is not live.'
-      : 'The live contracts are ready, but source publication, independent audit, rehearsal, and final approval are still required.';
+  const closedReason = !topLevel
+    ? 'This page is embedded inside another page. Open it directly in its own tab before connecting a wallet.'
+    : !deployment.initialized
+      ? 'The deployed code matches, but the verifier has not been initialized.'
+      : !deployment.depositViable
+        ? 'The verifier is initialized, but a fresh qualified validator release path is not live.'
+        : 'The live contracts are ready, but source publication, independent audit, rehearsal, and final approval are still required.';
 
   const submitDeposit = async () => {
     if (!window.ethereum || !account || !form.amountRaw || !form.recipient)
       return;
+    let submittedDepositHash: Hex | undefined;
     setAction({
       phase: 'confirming',
       message: 'Rechecking every safety gate…',
@@ -526,6 +610,39 @@ export function BridgeApp() {
         chain: mainnet,
         transport: custom(window.ethereum),
       });
+
+      const assertTransactionReady = async () => {
+        if (!isTopLevelWindow()) {
+          throw new Error(
+            'This bridge is embedded inside another page. Open it directly before signing.',
+          );
+        }
+        const [freshState, walletAccounts, chainId] = await Promise.all([
+          inspectDeployment(),
+          wallet.getAddresses(),
+          wallet.getChainId(),
+        ]);
+        setDeployment(freshState);
+        const selected = walletAccounts[0];
+        if (!selected || !isAddressEqual(selected, account)) {
+          throw new Error(
+            'The selected wallet account changed. Review the form and try again.',
+          );
+        }
+        if (chainId !== ETHEREUM_CHAIN_ID) {
+          throw new Error('Switch your wallet to Ethereum Mainnet and try again.');
+        }
+        if (
+          !freshState.identityMatches ||
+          !freshState.depositViable ||
+          !releaseApproved
+        ) {
+          throw new Error(
+            'Deposits are not approved and live yet. Nothing was sent.',
+          );
+        }
+      };
+
       const currentAllowance = await publicClient.readContract({
         address: USDT_ADDRESS,
         abi: usdtAbi,
@@ -533,8 +650,9 @@ export function BridgeApp() {
         args: [account, VAULT_ADDRESS],
       });
 
-      if (currentAllowance < form.amountRaw) {
+      if (currentAllowance !== form.amountRaw) {
         if (currentAllowance > 0n) {
+          await assertTransactionReady();
           setAction({
             phase: 'resetting',
             message: 'Resetting the old USDT allowance to zero…',
@@ -545,9 +663,10 @@ export function BridgeApp() {
             functionName: 'approve',
             args: [VAULT_ADDRESS, 0n],
           });
-          await publicClient.waitForTransactionReceipt({ hash: resetHash });
+          await waitForSuccessfulReceipt(resetHash, 'Allowance reset');
         }
 
+        await assertTransactionReady();
         setAction({
           phase: 'approving',
           message: `Approving exactly ${amount} USDT…`,
@@ -558,9 +677,21 @@ export function BridgeApp() {
           functionName: 'approve',
           args: [VAULT_ADDRESS, form.amountRaw],
         });
-        await publicClient.waitForTransactionReceipt({ hash: approvalHash });
+        await waitForSuccessfulReceipt(approvalHash, 'USDT approval');
       }
 
+      await assertTransactionReady();
+      const exactAllowance = await publicClient.readContract({
+        address: USDT_ADDRESS,
+        abi: usdtAbi,
+        functionName: 'allowance',
+        args: [account, VAULT_ADDRESS],
+      });
+      if (exactAllowance !== form.amountRaw) {
+        throw new Error(
+          'The final USDT allowance does not exactly match this deposit. Nothing was moved.',
+        );
+      }
       setAction({
         phase: 'depositing',
         message: 'Confirm the vault deposit in your wallet…',
@@ -571,35 +702,64 @@ export function BridgeApp() {
         functionName: 'deposit',
         args: [form.amountRaw, form.recipient],
       });
+      submittedDepositHash = depositHash;
       setAction({
         phase: 'confirming',
         message: 'Waiting for Ethereum confirmation…',
         hash: depositHash,
       });
-      const receipt = await publicClient.waitForTransactionReceipt({
-        hash: depositHash,
-      });
+      const receipt = await waitForSuccessfulReceipt(
+        depositHash,
+        'Vault deposit',
+      );
+      submittedDepositHash = receipt.transactionHash;
       const depositLogs = parseEventLogs({
         abi: vaultAbi,
         eventName: 'Deposit',
         logs: receipt.logs,
-      });
-      const depositId = depositLogs[0]?.args.depositId;
+      }).filter((log) => isAddressEqual(log.address, VAULT_ADDRESS));
+      if (depositLogs.length !== 1) {
+        throw new Error(
+          'The Ethereum transaction succeeded, but its vault Deposit event could not be verified. Do not retry until the transaction is reviewed.',
+        );
+      }
+      const depositEvent = depositLogs[0];
+      if (
+        !isAddressEqual(depositEvent.args.token, USDT_ADDRESS) ||
+        depositEvent.args.amount !== form.amountRaw ||
+        !sameHex(depositEvent.args.b3Recipient, form.recipient)
+      ) {
+        throw new Error(
+          'The Ethereum transaction succeeded, but its Deposit details did not match this form. Do not retry until the transaction is reviewed.',
+        );
+      }
+      const depositId = depositEvent.args.depositId;
 
       setAction({
         phase: 'success',
         message:
           'Deposit confirmed on Ethereum. Keep this transaction hash until the B3 mint is visible.',
-        hash: depositHash,
+        hash: receipt.transactionHash,
         depositId,
       });
       await Promise.all([refreshDeployment(), refreshWallet(account)]);
     } catch (error) {
-      setAction({ phase: 'error', message: friendlyError(error) });
+      setAction({
+        phase: 'error',
+        message: friendlyError(error),
+        hash: submittedDepositHash,
+      });
     }
   };
 
   const mainButton = () => {
+    if (!topLevel) {
+      return (
+        <Button disabled size="lg" className="h-12 w-full">
+          Open this bridge directly in its own tab
+        </Button>
+      );
+    }
     if (!account) {
       return (
         <Button
@@ -850,7 +1010,9 @@ export function BridgeApp() {
                   {action.phase === 'success'
                     ? 'Deposit confirmed'
                     : action.phase === 'error'
-                      ? 'Nothing was sent'
+                      ? action.hash
+                        ? 'Review transaction'
+                        : 'Nothing was sent'
                       : 'Wallet action'}
                 </AlertTitle>
                 <AlertDescription>

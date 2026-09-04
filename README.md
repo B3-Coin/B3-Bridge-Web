@@ -30,8 +30,10 @@ pnpm build
 - No seed phrase, B3 private key, BLS key, or wallet password is requested.
 - Four deployed code hashes and the immutable vault route are checked against pinned values.
 - B3 Base58Check and P2PKH network validation happens locally before signing.
-- USDT approval is limited to the exact deposit amount; an old non-zero allowance is reset first when required.
-- The complete readiness check runs again immediately before any transaction.
+- USDT approval is limited to the exact deposit amount; any different non-zero allowance is reset first.
+- Contract readiness, wallet account, wallet network, and top-level-page checks run again immediately before each transaction.
+- Reverted, cancelled, and unrelated replacement transactions are never shown as successful deposits.
+- Deposits are blocked when the app is embedded in an iframe; supported hosts also send anti-framing headers.
 - The vault itself rejects deposits unless its on-chain verifier reports a viable release path.
 
 ## Hosting
