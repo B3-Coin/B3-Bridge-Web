@@ -7,7 +7,7 @@ const socialImage =
 export const metadata: Metadata = {
   title: 'B3 Bridge',
   description:
-    'Move canonical Ethereum USDT into B3 Hive as bUSD through the verified B3 staker bridge.',
+    'Move canonical Ethereum USDT into B3 Hive as bUSD and withdraw finalized bUSD back to Ethereum.',
   openGraph: {
     title: 'B3 Bridge',
     description: 'Ethereum USDT ↔ B3 Hive',
@@ -16,7 +16,7 @@ export const metadata: Metadata = {
         url: socialImage,
         width: 1200,
         height: 630,
-        alt: 'B3 Bridge — Ethereum USDT to B3 Hive',
+        alt: 'B3 Bridge — Ethereum USDT and B3 bUSD',
       },
     ],
   },

@@ -1,10 +1,10 @@
 # B3 Bridge Web
 
-Non-custodial browser interface for moving canonical Ethereum USDT into B3 Hive as bUSD through the keyless B3 staker bridge.
+Non-custodial browser interface for moving canonical Ethereum USDT into B3 Hive as bUSD and returning finalized bUSD burns to Ethereum through the keyless B3 staker bridge.
 
 ## Current safety state
 
-This release is intentionally fail-closed. It can connect an Ethereum wallet, validate a B3 recipient locally, and independently inspect the deployed contracts. It cannot submit a deposit until all four release flags in `lib/bridge-config.ts` are reviewed and enabled **and** the live verifier reports `depositViable() == true`.
+This release is intentionally fail-closed. It can connect an Ethereum wallet, validate a B3 recipient locally, independently inspect the deployed contracts, and validate a public B3 withdrawal proof locally. It cannot submit a deposit or withdrawal until the separate release flags in `lib/bridge-config.ts` are reviewed and enabled and the required live verifier predicate is true.
 
 At the verification snapshot recorded in `public/deployment.json`, the deployed runtime bytecode and immutable configuration matched the B3 v1.1.1 artifacts exactly. The verifier was not initialized, source publication was pending, and production approval was false.
 
@@ -28,17 +28,20 @@ pnpm build
 
 - No backend and no custody by this website.
 - No seed phrase, B3 private key, BLS key, or wallet password is requested.
+- The site never connects to B3 wallet RPC. Withdrawal users paste only the public results of `getbridgeinfo` and `getbridgewithdrawalproof` from their local B3 Wallet.
 - Four deployed code hashes and the immutable vault route are checked against pinned values.
 - B3 Base58Check and P2PKH network validation happens locally before signing.
 - USDT approval is limited to the exact deposit amount; any different non-zero allowance is reset first.
 - Contract readiness, wallet account, wallet network, and top-level-page checks run again immediately before each transaction.
+- Withdrawal leaf, ordered 32-level path, root, and typed release calldata are recomputed locally. The current Ethereum root, finalized height, replay bit, reserve accounting, actual USDT balance, and vault-computed leaf are checked again before release.
+- New bUSD burns require the stronger live-bridge predicate. A previously finalized withdrawal may still be released if the validator relayer later becomes temporarily stale.
 - Reverted, cancelled, and unrelated replacement transactions are never shown as successful deposits.
 - Deposits are blocked when the app is embedded in an iframe; supported hosts also send anti-framing headers.
 - The vault itself rejects deposits unless its on-chain verifier reports a viable release path.
 
 ## Hosting
 
-The application is designed for static, content-addressed distribution. A reviewed release can be pinned by multiple IPFS operators and opened through a CID subdomain gateway or a local Kubo gateway. Never expose a B3 RPC port to serve this page.
+The application is designed for static, content-addressed distribution. A reviewed release can be pinned by multiple IPFS operators and opened through a CID subdomain gateway or a local Kubo gateway. Never expose a B3 RPC port to serve this page, and never paste RPC credentials or wallet secrets into it.
 
 ## Contracts
 

@@ -29,7 +29,12 @@ export const B3_CHAIN_DOMAIN =
   '0xa651262ae9031646047f290513d77ccae0fa9bd4e5afe7e07155a08d5dd1486a' as Hex;
 export const B3_ASSET_ID =
   '0xc69c6bd581c3188fe80d97cf9946f34c79ec502ccf204cd597dc9366315d61ad' as Hex;
+export const B3_BOOTSTRAP_SET_HASH =
+  '0x7a0b8aaca4e778df114ad13dcbb8cfdbb0c8cdf45760a564a2ac6c39dd6b2327' as Hex;
+export const B3_WITHDRAWAL_RULES_COMMITMENT =
+  '0xf96ee37321b191d9ba3e573fd7739ab8a163033824a1c534045bd168c3c88b44' as Hex;
 export const BRIDGE_ACTIVATION_HEIGHT = 811_001n;
+export const ORIGIN_DEPLOYMENT_BLOCK = 25_898_729n;
 export const MAX_DEPOSIT_RAW = 10_000_000_000n;
 export const MAX_DEPOSIT_USDT = '10,000';
 export const USDT_DECIMALS = 6;
@@ -41,6 +46,18 @@ export const RELEASE_GATES = {
   externalAuditComplete: false,
   endToEndRehearsalComplete: false,
   explorerSourcesPublished: false,
+} as const;
+
+// Outbound burns are irreversible, so their launch controls are independent
+// from inbound deposits. Claims against a root already accepted on Ethereum do
+// not depend on the relayer remaining live afterward.
+export const WITHDRAWAL_GATES = {
+  productionApproved: false,
+  compatibleB3WalletPublished: false,
+  externalAuditComplete: false,
+  endToEndRehearsalComplete: false,
+  explorerSourcesPublished: false,
+  relayerLiveForNewBurns: false,
 } as const;
 
 export const READ_RPC_URLS = [
@@ -59,8 +76,12 @@ export const vaultAbi = parseAbi([
   'function BRIDGE_ACTIVATION_HEIGHT() view returns (uint64)',
   'function nextDepositId() view returns (uint64)',
   'function locked() view returns (uint256)',
+  'function released(uint64 withdrawalId) view returns (bool)',
+  'function withdrawalLeaf((uint64 withdrawalId,address recipient,uint256 amount,uint64 b3Height) withdrawal) view returns (bytes32)',
   'function deposit(uint256 amount, bytes32 b3Recipient)',
+  'function release((uint64 withdrawalId,address recipient,uint256 amount,uint64 b3Height) withdrawal, bytes32[32] path)',
   'event Deposit(uint64 indexed depositId, address indexed token, uint256 amount, bytes32 b3Recipient)',
+  'event Withdrawn(uint64 indexed withdrawalId, address indexed token, address indexed recipient, uint256 amount, uint64 b3Height)',
 ]);
 
 export const verifierAbi = parseAbi([
@@ -74,6 +95,7 @@ export const verifierAbi = parseAbi([
   'function depositViable() view returns (bool)',
   'function releaseReady() view returns (bool)',
   'function latestBridgeFinalizedHeight() view returns (uint64)',
+  'function latestBridgeWithdrawalRoot() view returns (bytes32)',
 ]);
 
 export const usdtAbi = parseAbi([
